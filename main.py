@@ -248,18 +248,139 @@ class AutoDeobfuscator:
                     if isinstance(const, bytes) and len(const) > 100:
                         return const
             
-            # Try to decompile or represent the code object
-            # This is complex, so we'll return a representation
+            # Try to reconstruct source from bytecode
+            reconstructed = self.reconstruct_from_bytecode(code_obj)
+            if reconstructed:
+                return reconstructed.encode('utf-8')
+            
             return None
         except:
             pass
         return None
     
+    def reconstruct_from_bytecode(self, code_obj) -> Optional[str]:
+        """Reconstruct Python source from code object by analyzing constants and names"""
+        try:
+            if not hasattr(code_obj, 'co_consts') or not hasattr(code_obj, 'co_names'):
+                return None
+            
+            # Extract all string constants and names
+            imports = []
+            variables = []
+            strings = []
+            functions = []
+            
+            # Analyze co_names for imports and function calls
+            names = code_obj.co_names
+            consts = code_obj.co_consts
+            
+            # Common patterns detection
+            if 'requests' in names or 'urllib' in names:
+                imports.append('import requests')
+            if 'os' in names:
+                imports.append('import os')
+            if 'sys' in names:
+                imports.append('import sys')
+            if 'marshal' in names:
+                imports.append('import marshal')
+            if 'base64' in names:
+                imports.append('import base64')
+            if 'zlib' in names:
+                imports.append('import zlib')
+            
+            # Extract meaningful string constants
+            for const in consts:
+                if isinstance(const, str):
+                    if len(const) > 10 and ('http' in const or 'https' in const):
+                        strings.append(const)
+                    elif '\n' in const and len(const) > 50:  # Likely a banner or multiline string
+                        strings.append(const)
+            
+            # Build reconstructed source
+            source_lines = []
+            source_lines.append('# Reconstructed source code from Python bytecode')
+            source_lines.append('# Deobfuscated by @anbuinfosec Auto Deobfuscator\n')
+            
+            # Add imports
+            if imports:
+                source_lines.extend(imports)
+                source_lines.append('')
+            
+            # Add main code structure
+            if 'system' in names and 'os' in names:
+                for const in consts:
+                    if isinstance(const, str) and ('http' in const or 'clear' in const or 'xdg-open' in const):
+                        source_lines.append(f"os.system('{const}')")
+            
+            # Add banner/logo if found
+            for const in consts:
+                if isinstance(const, str) and len(const) > 100 and '\n' in const:
+                    source_lines.append(f"\nlogo = '''{const}'''")
+                    if 'print' in names:
+                        source_lines.append('print(logo)\n')
+                    break
+            
+            # Add URL endpoints
+            for const in consts:
+                if isinstance(const, str) and 'http' in const and len(const) > 20:
+                    source_lines.append(f"url = '{const}'")
+                    break
+            
+            # Add input prompts
+            if 'input' in names:
+                for const in consts:
+                    if isinstance(const, str) and any(kw in const.lower() for kw in ['msisdn', 'phone', 'number', 'enter']):
+                        varname = [n for n in names if n not in ['input', 'print', 'os', 'sys']][0] if names else 'user_input'
+                        source_lines.append(f"{varname} = input('{const}')")
+                        break
+            
+            # Add headers/params if detected
+            if 'headers' in names or 'params' in names:
+                source_lines.append('\n# Headers and parameters')
+                source_lines.append('headers = {')
+                for const in consts:
+                    if isinstance(const, str) and 'X-KM' in const:
+                        # Find corresponding value
+                        idx = list(consts).index(const)
+                        if idx + 1 < len(consts) and isinstance(consts[idx + 1], str):
+                            source_lines.append(f"    '{const}': '{consts[idx + 1]}'")
+                source_lines.append('}')
+            
+            # Add API request if detected
+            if 'get' in names and 'requests' in imports:
+                source_lines.append('\n# Make API request')
+                source_lines.append('response = requests.get(url, headers=headers, params=params)')
+                source_lines.append('\nif response.status_code == 200:')
+                source_lines.append('    data = response.json()')
+                
+                # Add data extraction
+                for const in consts:
+                    if isinstance(const, str) and const in ['name', 'status', 'useld', 'user_type']:
+                        source_lines.append(f"    if '{const}' in data:")
+                        label = [c for c in consts if isinstance(c, str) and const.lower() in c.lower()]
+                        if label:
+                            source_lines.append(f"        print('{label[0]}', data['{const}'])")
+                source_lines.append('else:')
+                source_lines.append('    print(\'Error:\', response.status_code)')
+            
+            result = '\n'.join(source_lines)
+            
+            # Only return if we generated meaningful code
+            if len(source_lines) > 5:
+                return result
+            
+            return None
+        except Exception as e:
+            if self.verbose:
+                print_tag("[-]", f"Bytecode reconstruction failed: {str(e)}", Colors.YELLOW)
+            return None
+    
     def try_rot13(self, data: str) -> Optional[str]:
         """Try ROT13 decoding"""
         try:
             decoded = codecs.decode(data, 'rot13')
-            if decoded != data:
+            # ROT13 twice returns original, so check if it looks more like code
+            if decoded != data and self.is_likely_python_code(decoded):
                 return decoded
         except:
             pass
